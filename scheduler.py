@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 # -*-encoding: utf-8-*-
 
-from tornado.web import RequestHandler, url
-from tornado import gen
+from tornado.web import RequestHandler, Application
 from tornado import ioloop
 from apscheduler.schedulers.tornado import TornadoScheduler
 from apscheduler.executors.tornado import TornadoExecutor
@@ -139,3 +138,8 @@ class JobHanlder(RequestHandler):
     def log(self, msg):
         """记录日志"""
         pass
+
+if __name__ == "__main__":
+    
+    pass
+
