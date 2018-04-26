@@ -9,14 +9,15 @@ from apscheduler.jobstores.mongodb import MongoDBJobStore
 from apscheduler.util import undefined
 import json
 
-mongo_host = "localhost"
-mongo_port = 27017
+mongodb_host = "localhost"
+mongodb_port = 27017
 # 设置任务存储器
+connect_args = {"host": mongodb_host, "port": mongodb_port} 
 jobstores = {
-    "default": MongoDBJobStore(connect_args={"host": mongodb_host, "port": mongodb_port}),
+    "default": MongoDBJobStore(**connect_args),
 }
 # 设置任务执行器
-executores = {
+executors = {
     "default": TornadoExecutor()
 }
 
@@ -33,7 +34,7 @@ class JobScheduler(object):
     def __init__(self):
         self.initialize()
     
-    def self.initialize(self):
+    def initialize(self):
         """可以将要用的任务函数在这里注册"""
         pass
 
@@ -91,7 +92,7 @@ class JobScheduler(object):
         return self._scheduler.get_job(job_id, jobstore)
 
 
-class JobHanlder(RequestHandler):
+class JobHandler(RequestHandler):
     # 全局变量
     job_scheduler = JobScheduler()
     def post(self):
@@ -139,7 +140,14 @@ class JobHanlder(RequestHandler):
         """记录日志"""
         pass
 
+def main():
+    app = Application([
+        (r"/job_schedule", JobHandler)
+    ])
+    app.listen(56789)
+    ioloop.IOLoop.current().start()
 if __name__ == "__main__":
+    main()
     
-    pass
+    
 
