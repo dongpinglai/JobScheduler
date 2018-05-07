@@ -2,11 +2,49 @@
 # -*-encoding: utf-8-*-
 
 """
-DOC
+基于apscheduler和tornado库的定时任务服务。服务有监听端口模式和unix_socket两种方式。
+使用settings.SCHEDULER_USE_PORT控制。
+使用方法:
+1.需要在规则中定义一个获取规则本地路径的装饰器, 装饰规则中的execute方法.eg:
+    def add_file_path(execute):
+        script_file_path = os.path.abspath(__file__)
+        @wraps(execute)
+        def wrapper(context):
+            params = context.params 
+            params["__script_file_path__"] = script_file_path
+            execute(context)
+        
+        return wrapper
+
+    @add_file_path
+    def execute(context):
+        pass
+
+2.需要在规则中定义要调用的任务函数
+3.传参:
+    context.params = {}
+    params["job_id"] = job_id # 任务的唯一标识
+    params["func_name"] = func_name # 即第2点中定义的任务函数名
+    params["arguments"] = arguments # 字典,调用任务函数所用的参数
+    params["is_remove"] = True/False # 是否删除任务
+4.发送请求:
+    4.1.端口模式接口url:
+        url = "http://localhost:" + settings.SCHEDULER_PORT + "job_scheduler"
+    4.2.unix_socket模式i接口url:
+        url = "unixsocket://" + settings.SCHEDULER_UNIX_SOCK_PATH + "job_scheduler"
+    4.3.调用代码示例:
+        async_http_client = tornado.httpclient.AsyncHTTPClient()
+        kwargs = {"method": "POST", "body": json.dumps(context.params)}
+        res = yield async_http_client.fetch(url, **kwargs) 
+    
+
+
 """
 
 from tornado.web import RequestHandler, Application
 from tornado import ioloop
+from tornado.httpserver import HTTPServer
+from tornado.netutil import bind_unix_socket
 from apscheduler.schedulers.tornado import TornadoScheduler
 from apscheduler.executors.tornado import TornadoExecutor
 from apscheduler.jobstores.mongodb import MongoDBJobStore
@@ -16,9 +54,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.util import undefined
 import json
 import uuid
+import sys
+import os
+import imp
+import settings
 
-mongodb_host = "localhost"
-mongodb_port = 27017
+mongodb_host = settings.SCHEDULER_MONGODB_HOST
+mongodb_port = settings.SCHEDULER_MONGODB_PORT
 # 设置任务存储器
 connect_args = {"host": mongodb_host, "port": mongodb_port}
 jobstores = {
@@ -47,7 +89,7 @@ class JobScheduler(object):
 
     def initialize(self):
         """可以将要用的任务函数在这里注册"""
-        self._job_funcs["my_print"] = my_print
+        pass
 
     def register_func(self, func_name, func):
         self._job_funcs[func_name] = func
@@ -114,7 +156,7 @@ class JobScheduler(object):
                 # IntervalTrigger)):
                 self.reschedule_job(job_id, jobstore, trigger, **trigger_args)
         else:
-            raise TypeError("%s不是可调用对象" % func)
+            raise TypeError(u"%s不是可调用对象" % func)
 
     def add_job(self, func, trigger=None, args=None, kwargs=None, id=None, name=None, misfire_grace_time=undefined, coalesce=undefined,
                 max_instances=undefined, next_run_time=undefined, jobstore="default", executor="default", replace_existing=False, **trigger_args):
@@ -167,18 +209,21 @@ class JobHandler(RequestHandler):
             params, basestring) else params
         # 预先给定一个任务id
         job_id = params.get("job_id") or str(uuid.uuid1())
-        func_name = params.get("func_name")  # 定时调用的函数名
+        func_name = params.get("func_name")  # 定时调用的函数名,对应的函数需在请求模块(规则)中定义
         trigger_type = params.get("trigger_type")  # 触发器类型
         trigger_args = params.get("trigger_args")  # 触发器参数
         arguments = params.get("arguments")  # 调用函数传参
         is_remove = params.get("is_remove")  # 是否删除定时调用任务
+        script_file_path = params.get("__script_file_path__") # 请求模块(规则）文件路径
+        # 从模块中注册job_func
+        self.registy_job_func(script_file_path, func_name)
         trigger_and_args = self.get_trigger(trigger_type, trigger_args)
         if trigger_and_args is None:
-            result = {"status": False, "msg": "没有可用的触发器"}
+            result = {"status": False, "msg": u"没有可用的触发器"}
             self.write(json.dumps(result))
             return
         if not isinstance(arguments, dict):
-            result = {"status": False, "msg": "参数错误"}
+            result = {"status": False, "msg": u"参数错误"}
             self.write(json.dumps(result))
             return
         if is_remove:
@@ -221,6 +266,26 @@ class JobHandler(RequestHandler):
                     "job_id": job_id}
                 self.write(json.dumps(result))
 
+    def registy_job_func(self, script_file_path, func_name):
+        """注册任务函数"""
+        mod, mod_name = self.load_module(script_file_path)
+        func = getattr(mod, func_name, None)
+        if func:
+            #func_name = mod_name + "_" + func_name
+            if func_name not in self.job_scheduler._job_funcs:
+                self.job_scheduler.register_func(func_name, func)
+
+    def load_module(self, script_file_path):
+        """导入模块"""
+        mod_name = uuid.uuid3(uuid.NAMESPACE_DNS, str(script_file_path))
+        mod_name = str(mod_name).replace("-", "_")
+        try:
+            return sys.modules[mod_name], mod_name
+        except KeyError:
+            pass
+        mod = imp.load_source(mod_name, script_file_path)
+        return mod, mod_name
+
     def get_trigger(self, trigger_type, trigger_args):
         """获取触发器,共有三种类型的触发器:
         1.cron
@@ -251,7 +316,14 @@ def main():
     app = Application([
         (r"/job_schedule", JobHandler)
     ], settings={"debug": True})
-    app.listen(56789)
+    if settings.USE_SSL and settings.SCHEDULER_USE_PORT:
+        app.listen(settings.SCHEDULER_TORNADO_PORT)
+    else:
+        sock_path = settings.SCHEDULER_UNIX_SOCK_PATH
+        http_server = HTTPServer(app)
+        unix_sock = bind_unix_socket(sock_path)
+        http_server.add_socket(unix_sock)
+
     ioloop.IOLoop.current().start()
 
 

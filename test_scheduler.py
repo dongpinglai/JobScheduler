@@ -4,6 +4,10 @@
 
 import requests
 import json
+import os
+from functools import wraps
+import settings
+
 
 def get_trigger_info(push_type):
     """配置触发器"""
@@ -19,6 +23,19 @@ def get_trigger_info(push_type):
         return triggers[push_type]
     return None
 
+
+def add_file_path(execute):
+    script_file_path = os.path.abspath(__file__)
+    @wraps(execute)
+    def wrapper(context):
+        params = context.params 
+        params["__script_file_path__"] = script_file_path
+        execute(context)
+    
+    return wrapper
+
+
+@add_file_path
 def execute(context):
     params = context.params
     if params:
@@ -44,7 +61,7 @@ def execute(context):
         try:
             res = requests.post(url, data={"params": json.dumps(params)})
         except:
-            context.result = {"status": False, "msg": "HTTP Error, url:%s, data:%s" % (url, data)} 
+            context.result = {"status": False, "msg": "HTTP Error, url:%s, params:%s" % (url, params)} 
             return 
         else:
             result = res.json()
@@ -54,6 +71,10 @@ def execute(context):
         context.result = {"status": True, "msg": "params is None"}
     
     
+def my_print(*args, **kwargs):
+    import datetime
+    print datetime.datetime.now(), args, kwargs
+
 if __name__ == "__main__":
     from collections import namedtuple
 
